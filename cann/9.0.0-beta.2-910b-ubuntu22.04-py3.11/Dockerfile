@@ -1,6 +1,8 @@
 # Stage 1: Install Python
 FROM ubuntu:22.04 AS python-installer
 
+COPY sources.list.port /etc/apt/sources.list
+
 # Python Environment variables
 ENV PATH=/usr/local/python3.11.15/bin:${PATH}
 
@@ -99,6 +101,8 @@ RUN . /usr/local/Ascend/ascend-toolkit/set_env.sh && \
     
 # Stage 3: Copy results from previous stages
 FROM ubuntu:22.04 AS official-ubuntu
+
+COPY sources.list.port /etc/apt/sources.list
 
 # Python Environment variables
 ENV PATH=/usr/local/python3.11.15/bin:${PATH}
