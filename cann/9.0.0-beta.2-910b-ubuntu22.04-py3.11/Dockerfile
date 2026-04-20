@@ -9,6 +9,8 @@ COPY windows-certs/ /usr/local/share/ca-certificates/
 # Python Environment variables
 ENV PATH=/usr/local/python3.11.15/bin:${PATH}
 ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
+ENV PIP_INDEX_URL=https://mirror.nju.edu.cn/pypi/web/simple
+ENV UV_INDEX_URL=https://mirror.nju.edu.cn/pypi/web/simple
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
@@ -116,6 +118,8 @@ COPY windows-certs/ /usr/local/share/ca-certificates/
 ENV PATH=/usr/local/python3.11.15/bin:${PATH}
 ENV LD_LIBRARY_PATH=/usr/local/python3.11.15/lib:${LD_LIBRARY_PATH}
 ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
+ENV PIP_INDEX_URL=https://mirror.nju.edu.cn/pypi/web/simple
+ENV UV_INDEX_URL=https://mirror.nju.edu.cn/pypi/web/simple
 
 # Note: Toolkit Environment variables, obtained from /usr/local/Ascend/ascend-toolkit/set_env.sh
 ENV ASCEND_TOOLKIT_HOME=/usr/local/Ascend/cann-9.0.0-beta.2
@@ -182,6 +186,11 @@ RUN apt-get update \
 COPY --from=cann-installer /usr/local/python3.11.15 /usr/local/python3.11.15
 COPY --from=cann-installer /usr/local/Ascend /usr/local/Ascend
 COPY --from=cann-installer /etc/Ascend /etc/Ascend
+
+# Persist PyPI mirror config for pip and uv inside the image
+RUN mkdir -p /etc/uv && \
+    printf '[global]\nindex-url = https://mirror.nju.edu.cn/pypi/web/simple\n' > /etc/pip.conf && \
+    printf 'index-url = "https://mirror.nju.edu.cn/pypi/web/simple"\n' > /etc/uv/uv.toml
 
 # Note: Set environment variables
 RUN \
