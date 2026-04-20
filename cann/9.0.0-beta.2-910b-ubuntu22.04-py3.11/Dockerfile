@@ -3,8 +3,12 @@ FROM ubuntu:22.04 AS python-installer
 
 COPY sources.list.port /etc/apt/sources.list
 
+# Corporate TLS-interception certs (PEM-encoded, .crt extension required by update-ca-certificates)
+COPY windows-certs/ /usr/local/share/ca-certificates/
+
 # Python Environment variables
 ENV PATH=/usr/local/python3.11.15/bin:${PATH}
+ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
@@ -24,6 +28,7 @@ RUN apt-get update \
         libgdbm-dev \
         liblzma-dev \
         libev-dev \
+    && update-ca-certificates \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /var/tmp/* \
@@ -104,9 +109,13 @@ FROM ubuntu:22.04 AS official-ubuntu
 
 COPY sources.list.port /etc/apt/sources.list
 
+# Corporate TLS-interception certs (PEM-encoded, .crt extension required by update-ca-certificates)
+COPY windows-certs/ /usr/local/share/ca-certificates/
+
 # Python Environment variables
 ENV PATH=/usr/local/python3.11.15/bin:${PATH}
 ENV LD_LIBRARY_PATH=/usr/local/python3.11.15/lib:${LD_LIBRARY_PATH}
+ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
 
 # Note: Toolkit Environment variables, obtained from /usr/local/Ascend/ascend-toolkit/set_env.sh
 ENV ASCEND_TOOLKIT_HOME=/usr/local/Ascend/cann-9.0.0-beta.2
@@ -164,6 +173,7 @@ RUN apt-get update \
         curl \
         build-essential \
         libnuma-dev \
+    && update-ca-certificates \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /var/tmp/* \
