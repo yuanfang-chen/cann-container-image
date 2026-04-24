@@ -1,45 +1,35 @@
-# Stage 1: Install Python
-FROM ubuntu:22.04 AS python-installer
+# Stage 1: Install Python (from python-build-standalone)
+FROM mcr.microsoft.com/devcontainers/base:ubuntu22.04 AS python-installer
+
+ARG TARGETPLATFORM
 
 # Python Environment variables
 ENV PATH=/usr/local/python3.11.15/bin:${PATH}
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
-        apt-transport-https \
         ca-certificates \
-        bash \
         curl \
-        build-essential \
-        libssl-dev \
-        zlib1g-dev \
-        libncurses5-dev \
-        libbz2-dev \
-        libreadline-dev \
-        libsqlite3-dev \
-        libffi-dev \
-        libnss3-dev \
-        libgdbm-dev \
-        liblzma-dev \
-        libev-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /var/tmp/* \
     && rm -rf /tmp/*
 
-# Install Python
-RUN curl -fsSL https://repo.huaweicloud.com/python/3.11.15/Python-3.11.15.tgz -o /tmp/Python-3.11.15.tgz && \
-    tar -xf /tmp/Python-3.11.15.tgz -C /tmp && \
-    cd /tmp/Python-3.11.15 && \
-    mkdir -p /usr/local/python3.11.15/lib && \
-    ./configure --enable-shared --enable-shared LDFLAGS="-Wl,-rpath /usr/local/python3.11.15/lib" --prefix=/usr/local/python3.11.15 && \
-    make -j $(nproc) && \
-    make altinstall && \
+# Install Python from a pre-built python-build-standalone release
+RUN ARCH=$(case "${TARGETPLATFORM}" in \
+        "linux/amd64") echo "x86_64" ;; \
+        "linux/arm64") echo "aarch64" ;; \
+        *) echo "Unsupported TARGETPLATFORM: ${TARGETPLATFORM}" && exit 1 ;; \
+    esac) && \
+    PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20260414/cpython-3.11.15+20260414-${ARCH}-unknown-linux-gnu-install_only.tar.gz" && \
+    curl -fsSL "${PYTHON_URL}" -o /tmp/python.tar.gz && \
+    mkdir -p /usr/local/python3.11.15 && \
+    tar -xzf /tmp/python.tar.gz -C /usr/local/python3.11.15 --strip-components=1 && \
     ln -sf /usr/local/python3.11.15/bin/python3.11 /usr/local/python3.11.15/bin/python3 && \
     ln -sf /usr/local/python3.11.15/bin/pip3.11 /usr/local/python3.11.15/bin/pip3 && \
     ln -sf /usr/local/python3.11.15/bin/python3 /usr/local/python3.11.15/bin/python && \
     ln -sf /usr/local/python3.11.15/bin/pip3 /usr/local/python3.11.15/bin/pip && \
-    rm -rf /tmp/*
+    rm -f /tmp/python.tar.gz
 
 # Stage 2: Install CANN
 FROM python-installer AS cann-installer
@@ -98,7 +88,19 @@ RUN . /usr/local/Ascend/ascend-toolkit/set_env.sh && \
     rm -f ~/Ascend-cann-nnal.run
     
 # Stage 3: Copy results from previous stages
-FROM ubuntu:22.04 AS official-ubuntu
+FROM mcr.microsoft.com/devcontainers/base:ubuntu22.04 AS official-ubuntu
+
+ARG TARGETPLATFORM
+
+# Path (relative to the build context) to a folder containing company CA
+# certificates (.crt files) to bake into the runtime image so tools like
+# pip / curl / git trust the corporate TLS-intercepting proxy at runtime.
+# Required — pass it via
+# `docker build --build-arg COMPANY_CA_DIR=path/to/certs ...`.
+# the folder should contain:
+    # Huawei_Web_Secure_Internet_Gateway_CA_20260508.crt       ← issuer of your proxy's re-signed certs (active)
+    # Huawei_Web_Secure_Internet_Gateway_CA_V2_20341208.crt    ← successor, long-lived
+ARG COMPANY_CA_DIR
 
 # Python Environment variables
 ENV PATH=/usr/local/python3.11.15/bin:${PATH}
@@ -160,6 +162,13 @@ RUN apt-get update \
         curl \
         build-essential \
         libnuma-dev \
+        less \
+        ccache \
+        gawk \
+        ninja-build \
+        patchelf \
+        binutils \
+        file \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /var/tmp/* \
@@ -168,6 +177,59 @@ RUN apt-get update \
 COPY --from=cann-installer /usr/local/python3.11.15 /usr/local/python3.11.15
 COPY --from=cann-installer /usr/local/Ascend /usr/local/Ascend
 COPY --from=cann-installer /etc/Ascend /etc/Ascend
+
+# Default Python virtualenv at /opt/venv. All pip installs go here instead
+# of the system interpreter; CANN's Python bindings remain importable via
+# PYTHONPATH, which venvs honor.
+RUN python -m venv /opt/venv
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH=/opt/venv/bin:$PATH
+
+# | Tool                          | Default CA path                                                  | Honors `SSL_CERT_FILE`?                                |
+# | ----------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------ |
+# | `git` (GnuTLS)                | `/etc/ssl/certs/ca-certificates.crt` — hardcoded at compile time | via `http.sslCAInfo` config (what we did); env varies  |
+# | `curl` / `openssl` (OpenSSL)  | `/etc/ssl/certs/ca-certificates.crt` by default on Debian        | yes                                                    |
+# | Python `ssl` module           | uses OpenSSL's default → same path                               | yes (via OpenSSL)                                      |
+# | Python `requests` / `urllib3` | **certifi's bundled `cacert.pem`** (NOT the system bundle!)      | via `REQUESTS_CA_BUNDLE` or `SSL_CERT_FILE`            |
+# | `pip`                         | certifi's bundled `cacert.pem`                                   | via `PIP_CERT` env or `--cert` flag                    |
+# | Node.js                       | Node's default bundle                                            | via `NODE_EXTRA_CA_CERTS` (already set on the gateway) |
+# | .NET / Go / Java              | own trust stores                                                 | varies                                                 |
+
+# Trust company CA certificates
+RUN test -n "${COMPANY_CA_DIR}" \
+    || { echo "ERROR: COMPANY_CA_DIR build arg is required" >&2; exit 1; }
+COPY ${COMPANY_CA_DIR}/ /usr/local/share/ca-certificates/
+RUN update-ca-certificates --fresh && \
+    git config --system http.sslCAInfo /etc/ssl/certs/ca-certificates.crt
+
+# Point every common TLS stack at the now-correct system bundle
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt \
+    PIP_CERT=/etc/ssl/certs/ca-certificates.crt
+
+# Switch apt sources to the NJU mirror (per-arch)
+RUN case "${TARGETPLATFORM}" in \
+        "linux/amd64") \
+            sed -i \
+                -e 's|http://archive.ubuntu.com/ubuntu/|https://mirror.nju.edu.cn/ubuntu/|g' \
+                -e 's|http://security.ubuntu.com/ubuntu/|https://mirror.nju.edu.cn/ubuntu/|g' \
+                /etc/apt/sources.list \
+            ;; \
+        "linux/arm64") \
+            sed -i \
+                -e 's|http://ports.ubuntu.com/ubuntu-ports/|https://mirror.nju.edu.cn/ubuntu-ports/|g' \
+                /etc/apt/sources.list \
+            ;; \
+        *) echo "Unsupported TARGETPLATFORM: ${TARGETPLATFORM}" && exit 1 ;; \
+    esac
+
+# # Install uv (Python package manager) into /usr/local/bin and point it at
+# # the NJU PyPI mirror as the default index.
+# RUN curl -LsSf https://astral.sh/uv/install.sh \
+#     | env UV_INSTALL_DIR=/usr/local/bin sh -s -- --no-modify-path
+# ENV UV_DEFAULT_INDEX=https://mirror.nju.edu.cn/pypi/web/simple
 
 # Note: Set environment variables
 RUN \
