@@ -231,6 +231,19 @@ RUN case "${TARGETPLATFORM}" in \
 #     | env UV_INSTALL_DIR=/usr/local/bin sh -s -- --no-modify-path
 # ENV UV_DEFAULT_INDEX=https://mirror.nju.edu.cn/pypi/web/simple
 
+# Install LLVM via the official apt.llvm.org installer script
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
+        lsb-release \
+        software-properties-common \
+        gnupg \
+    && curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh \
+    && chmod +x /tmp/llvm.sh \
+    && /tmp/llvm.sh 22 all \
+    && rm -f /tmp/llvm.sh \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 # Note: Set environment variables
 RUN \
     CANN_TOOLKIT_ENV_FILE="/usr/local/Ascend/ascend-toolkit/set_env.sh" && \
