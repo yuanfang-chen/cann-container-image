@@ -1,0 +1,131 @@
+name: Build and Publish Enhanced CANN Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      cann_tag:
+        description: CANN unique tag (also the build context dir under cann/ and the published image tag)
+        required: true
+        default: 9.0.0-beta.2-910b-ubuntu22.04-py3.11
+        type: choice
+        options:
+          - 9.0.0-beta.2-910b-ubuntu22.04-py3.11
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            platform: linux/amd64
+          - runner: ubuntu-22.04-arm
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    name: build (${{ matrix.platform }})
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Free up disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: true
+          docker-images: false
+
+      - name: Generate throwaway CA for COMPANY_CA_DIR
+        working-directory: cann/${{ inputs.cann_tag }}
+        run: |
+          mkdir -p ci-ca
+          openssl req -x509 -nodes -days 1 -subj "/CN=ci-dummy" \
+            -newkey rsa:2048 -keyout /dev/null -out ci-ca/ci-dummy.crt
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Compute image name and platform pair
+        id: meta
+        run: |
+          repo="${GITHUB_REPOSITORY,,}"
+          platform="${{ matrix.platform }}"
+          echo "image=ghcr.io/${repo}/cann" >> "$GITHUB_OUTPUT"
+          echo "platform_pair=${platform//\//-}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ github.workspace }}/cann/${{ inputs.cann_tag }}
+          file: ${{ github.workspace }}/cann/${{ inputs.cann_tag }}/Dockerfile
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            COMPANY_CA_DIR=ci-ca
+          outputs: type=image,name=${{ steps.meta.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          provenance: false
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ inputs.cann_tag }}-${{ steps.meta.outputs.platform_pair }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    runs-on: ubuntu-22.04
+    needs: build
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-${{ inputs.cann_tag }}-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Compute image name
+        id: meta
+        run: |
+          repo="${GITHUB_REPOSITORY,,}"
+          echo "image=ghcr.io/${repo}/cann" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            --annotation "index:org.opencontainers.image.description=Enhanced CANN image (multi-arch)" \
+            --annotation "index:org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --annotation "index:org.opencontainers.image.revision=${GITHUB_SHA}" \
+            -t "${{ steps.meta.outputs.image }}:${{ inputs.cann_tag }}" \
+            $(printf '${{ steps.meta.outputs.image }}@sha256:%s ' *)
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect "${{ steps.meta.outputs.image }}:${{ inputs.cann_tag }}"
