@@ -202,6 +202,25 @@ COPY ${COMPANY_CA_DIR}/ /usr/local/share/ca-certificates/
 RUN update-ca-certificates --fresh && \
     git config --system http.sslCAInfo /etc/ssl/certs/ca-certificates.crt
 
+# # Install uv (Python package manager) into /usr/local/bin and point it at
+# # the NJU PyPI mirror as the default index.
+# RUN curl -LsSf https://astral.sh/uv/install.sh \
+#     | env UV_INSTALL_DIR=/usr/local/bin sh -s -- --no-modify-path
+# ENV UV_DEFAULT_INDEX=https://mirror.nju.edu.cn/pypi/web/simple
+
+# Install LLVM via the official apt.llvm.org installer script
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
+        lsb-release \
+        software-properties-common \
+        gnupg \
+    && curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh \
+    && chmod +x /tmp/llvm.sh \
+    && /tmp/llvm.sh 22 all \
+    && rm -f /tmp/llvm.sh \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 # Point every common TLS stack at the now-correct system bundle
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
     CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
@@ -224,25 +243,6 @@ RUN case "${TARGETPLATFORM}" in \
             ;; \
         *) echo "Unsupported TARGETPLATFORM: ${TARGETPLATFORM}" && exit 1 ;; \
     esac
-
-# # Install uv (Python package manager) into /usr/local/bin and point it at
-# # the NJU PyPI mirror as the default index.
-# RUN curl -LsSf https://astral.sh/uv/install.sh \
-#     | env UV_INSTALL_DIR=/usr/local/bin sh -s -- --no-modify-path
-# ENV UV_DEFAULT_INDEX=https://mirror.nju.edu.cn/pypi/web/simple
-
-# Install LLVM via the official apt.llvm.org installer script
-RUN apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
-        lsb-release \
-        software-properties-common \
-        gnupg \
-    && curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh \
-    && chmod +x /tmp/llvm.sh \
-    && /tmp/llvm.sh 22 all \
-    && rm -f /tmp/llvm.sh \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
 
 # Note: Set environment variables
 RUN \
